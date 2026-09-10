@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+
+# Built by scripts/build_playfair.py
+src/airplaya/crypto/playfair.dll
+src/airplaya/crypto/libplayfair.so
+src/airplaya/crypto/libplayfair.dylib
+*.obj
+*.lib
+*.exp
+*.pdb
+
+# Captured streams
+*.h264
+*.h265

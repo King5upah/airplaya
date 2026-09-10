@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airplaya"
+version = "0.1.0"
+description = "An AirPlay mirroring receiver: put your iPhone screen on a Windows desktop"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+keywords = ["airplay", "mirroring", "ios", "iphone", "rtsp", "screen-mirroring"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Video :: Capture",
+]
+dependencies = [
+  "cryptography>=41",
+  "zeroconf>=0.130",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+airplaya = "airplaya.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+airplaya = ["crypto/*.dll", "crypto/*.so", "crypto/*.dylib"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
