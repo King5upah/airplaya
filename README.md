@@ -87,6 +87,13 @@ UDP 7010 (clock), UDP 5353 (mDNS).
 
 ## How it works
 
+For the protocol itself — discovery, the control channel, the key derivation
+chain, the stream formats, and what this receiver does differently from a real
+Apple TV — see **[docs/airplay.md](docs/airplay.md)**. It is written from what
+went over the wire here, including the bugs that were most expensive to find.
+
+### The code
+
 | Module | Responsibility |
 | --- | --- |
 | `discovery.py` | Bonjour advertisement for `_airplay._tcp` and `_raop._tcp` |
