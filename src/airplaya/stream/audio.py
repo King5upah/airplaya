@@ -144,6 +144,7 @@ class AudioStream:
         control_port: int,
         device: str | int | None = None,
         enabled: bool = True,
+        recorder=None,
     ) -> None:
         self._host = host
         self._requested = {"data": data_port, "control": control_port}
@@ -154,6 +155,7 @@ class AudioStream:
 
         self._enabled = enabled
         self._device = device
+        self._recorder = recorder
         self._player: AudioPlayer | None = None
         self._playing = False
         self._jitter = JitterBuffer()
@@ -211,7 +213,7 @@ class AudioStream:
                 object_type=AOT_AAC_ELD, frame_length=samples
             )
             if self._player is None:
-                self._player = AudioPlayer(device=self._device)
+                self._player = AudioPlayer(device=self._device, pcm_tap=self._on_pcm)
             try:
                 self._player.start(extradata)
                 self._playing = True
@@ -373,6 +375,11 @@ class AudioStream:
                 self.decode_backlog_drops += 1
 
         self._maybe_log_stats()
+
+    def _on_pcm(self, pcm: bytes) -> None:
+        recorder = self._recorder
+        if recorder is not None and recorder.recording:
+            recorder.add_audio(pcm)
 
     def _decode_loop(self) -> None:
         while not self._stop.is_set():

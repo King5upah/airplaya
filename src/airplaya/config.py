@@ -61,6 +61,7 @@ class Config:
     # A stale mDNS record makes the receiver appear in the iOS picker but fail
     # to connect, which is confusing; re-register on every start.
     state_dir: str | None = None  # where the persistent Ed25519 key is kept
+    clips_dir: str | None = None  # where recorded clips go; None => ~/Videos/airplaya
     verbosity: int = 0
 
     def advertised_size(self) -> tuple[int, int]:

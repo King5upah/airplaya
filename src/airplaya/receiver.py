@@ -14,10 +14,12 @@ import threading
 from pathlib import Path
 
 from airplaya.config import Config
+from airplaya.control import ControlServer
 from airplaya.crypto.pairing import DeviceIdentity
 from airplaya.discovery import Advertiser
 from airplaya.log import get_logger
 from airplaya.net import format_hwaddr, hardware_address, primary_ipv4
+from airplaya.record import ClipRecorder, RecordingError, default_clip_path
 from airplaya.rtsp.server import RtspServer
 from airplaya.sink import build_sink
 from airplaya.stream.audio import AudioStream
@@ -45,14 +47,19 @@ class Receiver:
 
         self._address = config.advertise_ip or primary_ipv4()
         self._sink = build_sink(config)
-        self._mirror = MirrorStream(config.bind_host, config.mirror_port, self._sink)
+        self._recorder = ClipRecorder()
+        self._mirror = MirrorStream(
+            config.bind_host, config.mirror_port, self._sink, recorder=self._recorder
+        )
         self._audio = AudioStream(
             config.bind_host,
             config.audio_port,
             config.audio_control_port,
             device=config.audio_device,
             enabled=config.audio_enabled,
+            recorder=self._recorder,
         )
+        self._control = ControlServer(self.handle_command)
         self._timing = TimingClient(config.bind_host, config.timing_port)
 
         self._advertiser: Advertiser | None = None
@@ -87,8 +94,42 @@ class Receiver:
 
     def teardown_streams(self) -> None:
         """Drop the current session's media state but keep listening."""
+        # Finish any clip first: the stream it was recording is about to end,
+        # and an unfinalised MP4 is not playable.
+        if self._recorder.recording:
+            try:
+                self._recorder.stop()
+            except RecordingError as exc:
+                log.warning("could not finish the clip: %s", exc)
         self._sink.stop()
         self._audio.end_session()
+
+    # -- control commands ------------------------------------------------
+
+    def handle_command(self, message: dict) -> dict:
+        """Run one command from the front end. Raises on a bad request."""
+        command = message.get("command")
+        if command == "record":
+            path = message.get("path") or default_clip_path(self.config.clips_dir)
+            target = self._recorder.start(path, codec=self._mirror.codec or "h264")
+            return {"path": str(target)}
+        if command == "stop_record":
+            clip = self._recorder.stop()
+            return {
+                "clip": {
+                    "path": str(clip.path),
+                    "durationSeconds": round(clip.duration_seconds, 2),
+                    "sizeBytes": clip.size_bytes,
+                }
+            }
+        if command == "status":
+            return {
+                "recording": self._recorder.recording,
+                "recordingPath": str(self._recorder.path) if self._recorder.path else None,
+                "elapsedSeconds": round(self._recorder.elapsed_seconds, 1),
+                "mirroring": self._mirror.codec is not None,
+            }
+        raise ValueError(f"unknown command {command!r}")
 
     # -- lifecycle -------------------------------------------------------
 
@@ -96,6 +137,7 @@ class Receiver:
         self._mirror_port = self._mirror.start()
         self._audio_ports = self._audio.start()
         self._timing_port = self._timing.start()
+        self._control.start()
 
         self._rtsp = RtspServer((self.config.bind_host, self.config.rtsp_port), self)
         threading.Thread(
@@ -128,6 +170,12 @@ class Receiver:
         self._stopped.set()
         log.info("shutting down")
 
+        if self._recorder.recording:
+            try:
+                self._recorder.stop()
+            except RecordingError as exc:
+                log.warning("could not finish the clip: %s", exc)
+        self._control.stop()
         if self._advertiser is not None:
             self._advertiser.stop()
         if self._rtsp is not None:

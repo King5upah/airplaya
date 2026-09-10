@@ -15,6 +15,7 @@ explanation, and mirroring carries on.
 from __future__ import annotations
 
 import threading
+from typing import Callable
 
 from airplaya.log import get_logger
 
@@ -136,8 +137,15 @@ def resolve_device(selector: str | int | None) -> int | None:
 class AudioPlayer:
     """Decodes AAC frames and plays them. Safe to start and stop repeatedly."""
 
-    def __init__(self, device: str | int | None = None) -> None:
+    def __init__(
+        self,
+        device: str | int | None = None,
+        pcm_tap: "Callable[[bytes], None] | None" = None,
+    ) -> None:
         self._device = device
+        # Recording taps the decoded PCM here rather than decoding a second
+        # time. It is the same audio the speakers get.
+        self._pcm_tap = pcm_tap
         self._decoder = None
         self._resampler = None
         self._stream = None
@@ -288,6 +296,13 @@ class AudioPlayer:
 
         if not pcm:
             return
+
+        tap = self._pcm_tap
+        if tap is not None:
+            try:
+                tap(bytes(pcm))
+            except Exception:  # noqa: BLE001 - recording must not break playback
+                log.debug("the PCM tap raised", exc_info=True)
 
         with self._buffer_lock:
             self._buffer += pcm

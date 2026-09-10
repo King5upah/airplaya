@@ -103,10 +103,13 @@ class MirrorDecryptor:
 class MirrorStream:
     """Accepts one client at a time on the mirroring port and feeds the sink."""
 
-    def __init__(self, host: str, port: int, sink: VideoSink) -> None:
+    def __init__(self, host: str, port: int, sink: VideoSink, recorder=None) -> None:
         self._host = host
         self._port = port
         self._sink = sink
+        # Optional tap for recording. It sees the same Annex-B bytes as the
+        # sink, so a clip costs no re-encoding.
+        self._recorder = recorder
         self._server: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -116,6 +119,11 @@ class MirrorStream:
         self._pending_parameter_sets: bytes | None = None
         self._active_parameter_sets: bytes | None = None
         self._geometry: tuple[int, int] | None = None
+
+    @property
+    def codec(self) -> str | None:
+        """The codec in use, or None when nothing is being mirrored."""
+        return self._codec
 
     # -- lifecycle -------------------------------------------------------
 
@@ -284,6 +292,11 @@ class MirrorStream:
         if prefix:
             annex_b = prefix + annex_b
         self._sink.write(annex_b)
+
+        if self._recorder is not None and self._recorder.recording:
+            # A recording has to begin at a point a decoder can start from,
+            # which means parameter sets followed by an IDR.
+            self._recorder.add_video(annex_b, has_keyframe=prefix is not None)
 
     def _on_parameter_sets(self, option: int, payload: bytes) -> None:
         if not payload:

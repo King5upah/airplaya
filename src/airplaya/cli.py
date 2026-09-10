@@ -86,6 +86,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--state-dir", help="where the device key is stored")
     parser.add_argument(
+        "--clips-dir",
+        help="where recorded clips are saved (default: ~/Videos/airplaya)",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="count",
@@ -125,6 +129,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         video_max_side=args.video_max_side,
         ffplay_binary=args.ffplay,
         state_dir=args.state_dir,
+        clips_dir=args.clips_dir,
         verbosity=args.verbose,
     )
 
