@@ -8,9 +8,11 @@ second or more behind the phone.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from airplaya.log import get_logger
 from airplaya.sink.base import VideoSink
@@ -95,6 +97,8 @@ class FfplaySink(VideoSink):
         self._process = None
         if process is None:
             return
+
+        # Closing stdin is the polite exit: ffplay sees end of stream.
         if process.stdin is not None:
             try:
                 process.stdin.close()
@@ -102,14 +106,46 @@ class FfplaySink(VideoSink):
                 pass
         try:
             process.wait(timeout=2)
+            return
         except subprocess.TimeoutExpired:
-            log.debug("sink did not exit; terminating")
-            process.terminate()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
+            pass
+
+        log.debug("sink did not exit on its own; terminating")
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        process.kill()
+
+        # A launcher shim (Chocolatey installs one for ffplay) spawns the real
+        # binary as a child, and killing the shim leaves that child running
+        # with a window nobody owns. Take the whole tree down.
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                capture_output=True,
+                check=False,
+            )
 
 
 def default_binary() -> str:
-    return "ffplay.exe" if sys.platform == "win32" else "ffplay"
+    """Locate ffplay, preferring the real binary over any launcher shim.
+
+    Chocolatey puts a shim in `PATH` that re-launches the real executable as a
+    child process. Running the real one directly means the process we hold is
+    the process that owns the window.
+    """
+    name = "ffplay.exe" if sys.platform == "win32" else "ffplay"
+    found = shutil.which(name)
+    if found is None:
+        return name
+
+    path = Path(found)
+    if sys.platform == "win32" and "chocolatey" in str(path).casefold():
+        for candidate in Path("C:/ProgramData/chocolatey/lib").glob(
+            "ffmpeg*/tools/**/bin/ffplay.exe"
+        ):
+            return str(candidate)
+    return str(path)
