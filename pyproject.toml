@@ -21,6 +21,10 @@ classifiers = [
 dependencies = [
   "cryptography>=41",
   "zeroconf>=0.130",
+  # Audio: PyAV decodes AAC-ELD (the command-line ffmpeg cannot be given the
+  # codec configuration it needs), sounddevice picks the output device.
+  "av>=12",
+  "sounddevice>=0.4",
 ]
 
 [project.optional-dependencies]

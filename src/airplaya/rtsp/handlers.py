@@ -61,6 +61,10 @@ class ReceiverServices(Protocol):
 
     def timing_port(self) -> int: ...
 
+    def set_audio_keys(self, key: bytes, iv: bytes) -> None: ...
+
+    def configure_audio(self, ct: int, frame_length: int | None) -> None: ...
+
     def start_timing(self, address: str, port: int) -> None: ...
 
     def teardown_streams(self) -> None: ...
@@ -267,6 +271,8 @@ def _setup_keys(
 
     session.aes_key = aes_key
     session.aes_iv = eiv[:16]
+    # Audio uses the same key with the client's IV, in CBC rather than CTR.
+    services.set_audio_keys(aes_key, session.aes_iv)
 
     timing_protocol = body.get("timingProtocol")
     if timing_protocol not in (None, "NTP"):
@@ -301,7 +307,10 @@ def _setup_stream(session: Session, stream: dict, services: ReceiverServices) ->
 
     if stream_type == STREAM_TYPE_AUDIO:
         ports = services.audio_ports()
-        log.info("audio stream requested (ct=%s); packets will be discarded", stream.get("ct"))
+        # `spf` is samples per frame, which the decoder configuration needs.
+        compression = int(stream.get("ct") or 0)
+        frame_length = int(stream.get("spf") or 0) or None
+        services.configure_audio(compression, frame_length)
         return {
             "type": STREAM_TYPE_AUDIO,
             "dataPort": ports["data"],

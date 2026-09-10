@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from airplaya import __version__
 from airplaya.config import Config
 from airplaya.log import configure, get_logger
 from airplaya.receiver import Receiver
+from airplaya.sink.audio import list_output_devices
 from airplaya.sink.ffplay import default_binary
 
 log = get_logger(__name__)
@@ -34,6 +36,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ffplay", default=default_binary(), help="path to the ffplay binary"
+    )
+    parser.add_argument(
+        "--audio-device",
+        help="output device for the mirrored audio: an index or part of its name "
+        "(default: the system default output)",
+    )
+    parser.add_argument(
+        "--no-audio", action="store_true", help="do not play the mirrored audio"
+    )
+    parser.add_argument(
+        "--list-audio-devices",
+        action="store_true",
+        help="print the available output devices and exit",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="machine-readable output, for --list-audio-devices"
     )
     parser.add_argument("--bind", default="0.0.0.0", help="local address to bind")
     parser.add_argument(
@@ -81,6 +99,8 @@ def config_from_args(args: argparse.Namespace) -> Config:
         width=width,
         height=height,
         max_fps=args.max_fps,
+        audio_enabled=not args.no_audio,
+        audio_device=args.audio_device,
         sink=args.sink,
         sink_path=args.sink_path,
         ffplay_binary=args.ffplay,
@@ -89,9 +109,31 @@ def config_from_args(args: argparse.Namespace) -> Config:
     )
 
 
+def print_audio_devices(as_json: bool) -> int:
+    devices = list_output_devices()
+    if as_json:
+        print(json.dumps([device.as_dict() for device in devices]))
+        return 0
+
+    if not devices:
+        print(
+            "No output devices found. Install the sounddevice package to choose one:\n"
+            "  pip install sounddevice"
+        )
+        return 0
+    print("Audio output devices:")
+    for device in devices:
+        api = f" [{device.host_api}]" if device.host_api else ""
+        print(f"  {device.index:>3}  {device.name}{api}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     configure(args.verbose)
+
+    if args.list_audio_devices:
+        return print_audio_devices(args.json)
 
     try:
         config = config_from_args(args)

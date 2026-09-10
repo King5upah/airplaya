@@ -13,6 +13,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'audio_devices.dart';
 import 'setup.dart';
 
 void main() {
@@ -62,6 +63,8 @@ class ReceiverController extends ChangeNotifier {
     required String name,
     required String sink,
     required bool verbose,
+    int? audioDeviceIndex,
+    bool audioEnabled = true,
   }) async {
     if (_process != null) return;
 
@@ -79,6 +82,11 @@ class ReceiverController extends ChangeNotifier {
       name,
       '--sink',
       sink,
+      if (!audioEnabled) '--no-audio',
+      if (audioEnabled && audioDeviceIndex != null) ...[
+        '--audio-device',
+        '$audioDeviceIndex',
+      ],
       if (verbose) '-v',
     ];
 
@@ -222,12 +230,29 @@ class _HomePageState extends State<HomePage> {
   List<Check> _checks = [];
   bool _repairing = false;
   String? _repairMessage;
+  List<AudioDevice> _audioDevices = [];
+  int? _audioDeviceIndex; // null means the system default
+  bool _audioEnabled = true;
 
   @override
   void initState() {
     super.initState();
     _controller.addListener(_onUpdate);
     _runChecks();
+    _loadAudioDevices();
+  }
+
+  Future<void> _loadAudioDevices() async {
+    final devices = await AudioDeviceService.list();
+    if (!mounted) return;
+    setState(() {
+      _audioDevices = devices;
+      // Drop a saved selection that no longer exists — devices come and go
+      // with headsets and monitors.
+      if (!devices.any((d) => d.index == _audioDeviceIndex)) {
+        _audioDeviceIndex = null;
+      }
+    });
   }
 
   Future<void> _runChecks() async {
@@ -283,6 +308,8 @@ class _HomePageState extends State<HomePage> {
             : _nameController.text.trim(),
         sink: _sink,
         verbose: _verbose,
+        audioDeviceIndex: _audioDeviceIndex,
+        audioEnabled: _audioEnabled,
       );
     }
   }
@@ -305,6 +332,16 @@ class _HomePageState extends State<HomePage> {
               onSinkChanged: (value) => setState(() => _sink = value),
               onVerboseChanged: (value) => setState(() => _verbose = value),
               onToggle: _toggle,
+            ),
+            const SizedBox(height: 14),
+            _AudioPanel(
+              devices: _audioDevices,
+              selected: _audioDeviceIndex,
+              enabled: _audioEnabled,
+              running: _controller.isRunning,
+              onDeviceChanged: (index) => setState(() => _audioDeviceIndex = index),
+              onEnabledChanged: (value) => setState(() => _audioEnabled = value),
+              onRefresh: _loadAudioDevices,
             ),
             const SizedBox(height: 14),
             _StatusStrip(
@@ -536,6 +573,100 @@ class _ControlsPanel extends StatelessWidget {
       focusedBorder: OutlineInputBorder(
         borderSide: BorderSide(color: _accent),
         borderRadius: BorderRadius.all(Radius.circular(8)),
+      ),
+    );
+  }
+}
+
+/// Audio output choice. Locked while the receiver runs, because the device is
+/// opened at stream start.
+class _AudioPanel extends StatelessWidget {
+  const _AudioPanel({
+    required this.devices,
+    required this.selected,
+    required this.enabled,
+    required this.running,
+    required this.onDeviceChanged,
+    required this.onEnabledChanged,
+    required this.onRefresh,
+  });
+
+  final List<AudioDevice> devices;
+  final int? selected;
+  final bool enabled;
+  final bool running;
+  final ValueChanged<int?> onDeviceChanged;
+  final ValueChanged<bool> onEnabledChanged;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final locked = running || !enabled;
+    return _Panel(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          _Field(
+            label: 'Audio',
+            child: SizedBox(
+              height: 44,
+              child: Row(
+                children: [
+                  Switch(
+                    value: enabled,
+                    activeThumbColor: _accent,
+                    onChanged: running ? null : onEnabledChanged,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: _Field(
+              label: 'Output device',
+              child: DropdownButtonFormField<int?>(
+                initialValue: selected,
+                isExpanded: true,
+                dropdownColor: _panel,
+                style: const TextStyle(color: _text, fontSize: 13.5),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  filled: true,
+                  fillColor: _ink,
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+                  border: OutlineInputBorder(
+                    borderSide: BorderSide(color: _line),
+                    borderRadius: BorderRadius.all(Radius.circular(8)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: _line),
+                    borderRadius: BorderRadius.all(Radius.circular(8)),
+                  ),
+                ),
+                items: [
+                  const DropdownMenuItem<int?>(
+                    value: null,
+                    child: Text('System default'),
+                  ),
+                  for (final device in devices)
+                    DropdownMenuItem<int?>(
+                      value: device.index,
+                      child: Text(device.label, overflow: TextOverflow.ellipsis),
+                    ),
+                ],
+                onChanged: locked ? null : onDeviceChanged,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            tooltip: 'Refresh the device list',
+            onPressed: running ? null : onRefresh,
+            icon: const Icon(Icons.refresh, size: 18, color: _muted),
+          ),
+        ],
       ),
     );
   }

@@ -20,7 +20,7 @@ from airplaya.log import get_logger
 from airplaya.net import format_hwaddr, hardware_address, primary_ipv4
 from airplaya.rtsp.server import RtspServer
 from airplaya.sink import build_sink
-from airplaya.stream.audio import AudioDrain
+from airplaya.stream.audio import AudioStream
 from airplaya.stream.mirror import MirrorStream
 from airplaya.stream.timing import TimingClient
 
@@ -46,7 +46,13 @@ class Receiver:
         self._address = config.advertise_ip or primary_ipv4()
         self._sink = build_sink(config)
         self._mirror = MirrorStream(config.bind_host, config.mirror_port, self._sink)
-        self._audio = AudioDrain(config.bind_host, config.audio_port, config.audio_control_port)
+        self._audio = AudioStream(
+            config.bind_host,
+            config.audio_port,
+            config.audio_control_port,
+            device=config.audio_device,
+            enabled=config.audio_enabled,
+        )
         self._timing = TimingClient(config.bind_host, config.timing_port)
 
         self._advertiser: Advertiser | None = None
@@ -67,6 +73,12 @@ class Receiver:
     def audio_ports(self) -> dict[str, int]:
         return dict(self._audio_ports)
 
+    def set_audio_keys(self, key: bytes, iv: bytes) -> None:
+        self._audio.set_keys(key, iv)
+
+    def configure_audio(self, ct: int, frame_length: int | None) -> None:
+        self._audio.configure_format(ct, frame_length)
+
     def timing_port(self) -> int:
         return self._timing_port
 
@@ -76,6 +88,7 @@ class Receiver:
     def teardown_streams(self) -> None:
         """Drop the current session's media state but keep listening."""
         self._sink.stop()
+        self._audio.end_session()
 
     # -- lifecycle -------------------------------------------------------
 

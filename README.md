@@ -15,11 +15,11 @@ iPhone ──mDNS──> airplaya (:7000 RTSP)
 
 ## Status
 
-Working: discovery, pairing, the FairPlay handshake, video decryption, and
-H.264/H.265 display.
+Working: discovery, pairing, the FairPlay handshake, video decryption,
+H.264/H.265 display, and audio playback on an output device of your choosing.
 
-Not yet: audio playback. The audio ports are bound and drained so that iOS is
-happy, but the packets are discarded. See [Audio](#audio).
+Not yet: ALAC audio. Mirroring uses AAC-ELD, which is what is implemented;
+a client that negotiates ALAC gets video only. See [Audio](#audio).
 
 ## Requirements
 
@@ -54,6 +54,9 @@ Useful flags:
 | `--sink file -o out.h264` | write the raw stream instead of playing it |
 | `--sink null` | discard the video (protocol testing) |
 | `--resolution 2532x1170` | resolution to advertise |
+| `--list-audio-devices` | print the output devices and exit |
+| `--audio-device 28` | play on that device (an index, or part of its name) |
+| `--no-audio` | video only |
 | `-v` / `-vv` | protocol log / per-packet trace |
 
 ### The desktop app
@@ -94,7 +97,9 @@ UDP 7010 (clock), UDP 5353 (mDNS).
 | `crypto/keys.py` | key derivation for the media streams |
 | `stream/mirror.py` | the video stream: framing, AES-CTR, NAL conversion |
 | `stream/nal.py` | length-prefixed NAL units to Annex-B |
-| `sink/` | where the video goes: ffplay, a file, or nowhere |
+| `stream/audio.py` | the audio stream: RTP, AES-CBC, frame extraction |
+| `stream/asc.py` | rebuilding the AAC configuration the decoder needs |
+| `sink/` | where the media goes: ffplay, a file, an audio device, or nowhere |
 
 Two details cause most of the trouble when writing one of these:
 
@@ -109,10 +114,26 @@ Two details cause most of the trouble when writing one of these:
 
 ## Audio
 
-Mirroring negotiates an audio stream alongside the video one. The receiver binds
-and drains those ports, but does not decode them yet: the payloads are AES-CBC
-encrypted AAC-ELD or ALAC frames, and both need their codec configuration
-carried out-of-band before a decoder will touch them.
+Audio arrives as RTP on UDP 6000, encrypted with AES-128-CBC — re-keyed from
+the session IV for every packet, and covering only the whole blocks.
+
+Inside is AAC-ELD at 44.1 kHz, 480 samples per frame. Bare access units: the
+`AudioSpecificConfig` a decoder needs is never transmitted, because both ends
+know the format from SETUP. So `stream/asc.py` reconstructs it from the `ct` and
+`spf` values in the SETUP request, and it is handed to the decoder as extradata.
+
+That last requirement rules out driving `ffmpeg` as a subprocess — its command
+line has no way to supply extradata, and ADTS cannot describe ELD. Hence PyAV
+for decoding, and PortAudio (via `sounddevice`) for playback, which unlike
+ffplay can be pointed at a specific output device:
+
+```powershell
+python -m airplaya --list-audio-devices
+python -m airplaya --audio-device "HyperX"
+```
+
+ALAC (`ct = 2`) is recognised and skipped. It needs the codec's magic cookie
+from a format packet this receiver does not parse yet.
 
 ## Tests
 

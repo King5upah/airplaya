@@ -35,6 +35,12 @@ class Config:
     max_fps: int = 30
     overscanned: bool = False
 
+    # --- audio ---
+    audio_enabled: bool = True
+    # A PortAudio device index, or part of a device name. None means the
+    # system default output.
+    audio_device: str | int | None = None
+
     # --- output ---
     sink: str = "ffplay"  # ffplay | file | null
     sink_path: str | None = None  # target file when sink == "file"
