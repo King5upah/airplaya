@@ -78,6 +78,7 @@ def handle_info(session: Session, request: Request, response: Response, services
     """
     body: dict[str, object] = {}
     device_id = format_hwaddr(hw_addr)
+    display_width, display_height = config.advertised_size()
     public_key_hex = session.identity.public_key.hex()
 
     # The client's first request asks for a TXT record by name, either in a
@@ -144,10 +145,10 @@ def handle_info(session: Session, request: Request, response: Response, services
         "displays": [
             {
                 "uuid": _DISPLAY_UUID,
-                "width": config.width,
-                "height": config.height,
-                "widthPixels": config.width,
-                "heightPixels": config.height,
+                "width": display_width,
+                "height": display_height,
+                "widthPixels": display_width,
+                "heightPixels": display_height,
                 "widthPhysical": 0,
                 "heightPhysical": 0,
                 "rotation": False,
@@ -232,6 +233,7 @@ def handle_setup(
             if isinstance(stream, dict)
         ]
 
+    log.debug("SETUP reply: %s", reply)
     response.set_body(plistlib.dumps(reply, fmt=plistlib.FMT_BINARY), BINARY_PLIST)
 
 

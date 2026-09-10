@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from airplaya.config import Config
+from airplaya.sink.app import AppSink
 from airplaya.sink.base import VideoSink
 from airplaya.sink.file import FileSink, NullSink
 from airplaya.sink.ffplay import FfplaySink
@@ -10,6 +11,10 @@ from airplaya.sink.ffplay import FfplaySink
 
 def build_sink(config: Config) -> VideoSink:
     kind = config.sink
+    if kind == "app":
+        if not config.video_port:
+            raise ValueError("--sink app needs --video-port")
+        return AppSink(port=config.video_port, max_side=config.video_max_side)
     if kind == "ffplay":
         return FfplaySink(
             binary=config.ffplay_binary,

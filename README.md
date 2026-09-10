@@ -52,6 +52,7 @@ Useful flags:
 | --- | --- |
 | `--name NAME` | the name shown in the iOS list |
 | `--sink file -o out.h264` | write the raw stream instead of playing it |
+| `--sink app --video-port N` | decode here and stream RGBA frames to a client on that port |
 | `--sink null` | discard the video (protocol testing) |
 | `--resolution 2532x1170` | resolution to advertise |
 | `--list-audio-devices` | print the output devices and exit |
@@ -61,13 +62,12 @@ Useful flags:
 
 ### The desktop app
 
-```powershell
-cd gui
-flutter build windows --release
-```
+A Flutter front end lives in its own repository. It runs the receiver, picks the
+audio output device, repairs the firewall rules, and draws the mirrored picture
+in its own window using `--sink app`.
 
-The app starts and stops the receiver, shows its log, and offers a one-click
-repair for the firewall rules described below.
+Everything the receiver does is available from the command line; the app is a
+convenience, not a requirement.
 
 ## Firewall
 
@@ -99,7 +99,7 @@ UDP 7010 (clock), UDP 5353 (mDNS).
 | `stream/nal.py` | length-prefixed NAL units to Annex-B |
 | `stream/audio.py` | the audio stream: RTP, AES-CBC, frame extraction |
 | `stream/asc.py` | rebuilding the AAC configuration the decoder needs |
-| `sink/` | where the media goes: ffplay, a file, an audio device, or nowhere |
+| `sink/` | where the media goes: ffplay, a client app, a file, or nowhere |
 
 Two details cause most of the trouble when writing one of these:
 

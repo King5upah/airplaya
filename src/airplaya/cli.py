@@ -27,9 +27,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--sink",
-        choices=("ffplay", "file", "null"),
+        choices=("ffplay", "app", "file", "null"),
         default="ffplay",
         help="where the video goes (default: an ffplay window)",
+    )
+    parser.add_argument(
+        "--video-port",
+        type=int,
+        help="for --sink app: the port the desktop app is listening on",
+    )
+    parser.add_argument(
+        "--video-max-side",
+        type=int,
+        default=1080,
+        help="for --sink app: longest edge to scale frames to (default: 1080)",
     )
     parser.add_argument(
         "-o", "--sink-path", help="output file for --sink file (raw Annex-B H.264)"
@@ -67,6 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-fps", type=int, default=30, help="frame rate to advertise"
     )
+    parser.add_argument(
+        "--orientation",
+        choices=("auto", "landscape", "portrait"),
+        default="auto",
+        help="shape of screen to advertise (default: auto, as given by --resolution)",
+    )
     parser.add_argument("--state-dir", help="where the device key is stored")
     parser.add_argument(
         "-v",
@@ -99,10 +116,13 @@ def config_from_args(args: argparse.Namespace) -> Config:
         width=width,
         height=height,
         max_fps=args.max_fps,
+        orientation=args.orientation,
         audio_enabled=not args.no_audio,
         audio_device=args.audio_device,
         sink=args.sink,
         sink_path=args.sink_path,
+        video_port=args.video_port,
+        video_max_side=args.video_max_side,
         ffplay_binary=args.ffplay,
         state_dir=args.state_dir,
         verbosity=args.verbose,

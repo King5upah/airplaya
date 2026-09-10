@@ -20,9 +20,12 @@ reach the decoder.
 
 from __future__ import annotations
 
+import queue
+import selectors
 import socket
 import struct
 import threading
+import time
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
@@ -45,6 +48,76 @@ _CT_NAMES = {CT_ALAC: "ALAC", CT_AAC_MAIN: "AAC", CT_AAC_ELD: "AAC-ELD"}
 
 # ALAC and AAC-ELD each have a fixed frame length in an AirPlay stream.
 _DEFAULT_FRAME_LENGTH = {CT_AAC_ELD: 480, CT_ALAC: 352}
+
+
+_SEQ_MODULO = 1 << 16
+_SEQ_HALF = _SEQ_MODULO // 2
+
+
+def _is_ahead(a: int, b: int) -> bool:
+    """True when sequence `a` is later than `b`, allowing for wraparound."""
+    return ((a - b) % _SEQ_MODULO) < _SEQ_HALF
+
+
+class JitterBuffer:
+    """Puts RTP frames back in order, and gives up on ones that never arrive.
+
+    UDP over Wi-Fi reorders and loses packets. Handing those straight to an
+    AAC-ELD decoder is heard as crackling: a frame decoded out of order is
+    noise, and a missing frame leaves the decoder mid-stream.
+
+    So frames wait here briefly. `depth` frames of slack is enough to absorb
+    normal reordering — at 480 samples each, that is about 11 ms per frame — and
+    once `max_depth` is exceeded the gap is declared lost and the buffer skips
+    ahead rather than stalling the stream indefinitely.
+    """
+
+    def __init__(self, depth: int = 3, max_depth: int = 24) -> None:
+        self._depth = depth
+        self._max_depth = max_depth
+        self._frames: dict[int, bytes] = {}
+        self._expected: int | None = None
+        self.lost = 0
+        self.duplicates = 0
+        self.late = 0
+
+    def push(self, sequence: int, frame: bytes) -> list[bytes]:
+        """Add a frame; return whichever frames are now ready, in order."""
+        if self._expected is None:
+            self._expected = sequence
+
+        if sequence in self._frames:
+            self.duplicates += 1
+            return []
+        if sequence != self._expected and _is_ahead(self._expected, sequence):
+            # Older than what we have already released: too late to use.
+            self.late += 1
+            return []
+
+        self._frames[sequence] = frame
+
+        # Release only what keeps `depth` frames of slack in hand, so a frame
+        # that arrives out of order still has time to land.
+        ready: list[bytes] = []
+        while len(self._frames) > self._depth:
+            held = self._frames.pop(self._expected, None)
+            if held is not None:
+                ready.append(held)
+                self._expected = (self._expected + 1) % _SEQ_MODULO
+                continue
+            if len(self._frames) < self._max_depth:
+                break
+            # The buffer is full and the frame we want has not arrived. Treat
+            # the gap as lost and resume from the oldest frame we do have.
+            oldest = min(self._frames, key=lambda s: (s - self._expected) % _SEQ_MODULO)
+            self.lost += (oldest - self._expected) % _SEQ_MODULO
+            self._expected = oldest
+
+        return ready
+
+    def reset(self) -> None:
+        self._frames.clear()
+        self._expected = None
 
 
 def decrypt_packet(key: bytes, iv: bytes, payload: bytes) -> bytes:
@@ -83,6 +156,13 @@ class AudioStream:
         self._device = device
         self._player: AudioPlayer | None = None
         self._playing = False
+        self._jitter = JitterBuffer()
+        # Decoding happens off the receive thread: an AAC decode takes long
+        # enough that doing it inline delays the next packet, and the delay is
+        # audible.
+        self._decode_queue: queue.Queue[bytes] = queue.Queue(maxsize=64)
+        self._decode_thread: threading.Thread | None = None
+        self._last_stats = 0.0
         self._key: bytes | None = None
         self._iv: bytes | None = None
         self._ct: int | None = None
@@ -90,6 +170,10 @@ class AudioStream:
 
         self.packet_count = 0
         self.byte_count = 0
+        self.frame_count = 0
+        self.data_packet_count = 0
+        self.control_packet_count = 0
+        self.decode_backlog_drops = 0
 
     # -- configuration ---------------------------------------------------
 
@@ -134,6 +218,14 @@ class AudioStream:
             except AudioUnavailable as exc:
                 log.error("%s", exc)
                 self._playing = False
+                return
+
+            self._jitter.reset()
+            if self._decode_thread is None:
+                self._decode_thread = threading.Thread(
+                    target=self._decode_loop, name="audio-decode", daemon=True
+                )
+                self._decode_thread.start()
 
     # -- lifecycle -------------------------------------------------------
 
@@ -186,20 +278,66 @@ class AudioStream:
     # -- receive loop ----------------------------------------------------
 
     def _receive(self) -> None:
+        # One selector over both sockets rather than a blocking read on each in
+        # turn: audio arrives about 90 times a second, and a half-second wait on
+        # whichever socket happens to be idle would throttle the other to a
+        # couple of packets a second.
+        selector = selectors.DefaultSelector()
+        for role, sock in self._sockets.items():
+            sock.setblocking(False)
+            selector.register(sock, selectors.EVENT_READ, role)
+
+        try:
+            self._select_loop(selector)
+        finally:
+            selector.close()
+
+    def _select_loop(self, selector: selectors.BaseSelector) -> None:
         while not self._stop.is_set():
-            for role, sock in list(self._sockets.items()):
+            try:
+                ready = selector.select(timeout=0.5)
+            except OSError:
+                return
+            for key, _ in ready:
+                role = key.data
+                sock = key.fileobj
                 try:
-                    data, _ = sock.recvfrom(_MAX_DATAGRAM)
-                except (socket.timeout, BlockingIOError):
+                    data, _ = sock.recvfrom(_MAX_DATAGRAM)  # type: ignore[union-attr]
+                except (BlockingIOError, InterruptedError):
                     continue
                 except OSError:
                     return
                 self.packet_count += 1
                 self.byte_count += len(data)
+                if self.packet_count == 1:
+                    # Worth an INFO line: "no audio at all" and "audio that is
+                    # not coming out of the speakers" need completely different
+                    # investigations, and this is the line that tells them
+                    # apart.
+                    log.info(
+                        "first audio packet arrived on the %s port (%d bytes)",
+                        role,
+                        len(data),
+                    )
                 if role == "data":
+                    self.data_packet_count += 1
+                    if self.data_packet_count <= 3:
+                        log.info(
+                            "audio data packet %d: %d bytes, payload type %#04x",
+                            self.data_packet_count,
+                            len(data),
+                            data[1] & 0x7F if len(data) > 1 else 0,
+                        )
                     self._on_packet(data)
                 else:
-                    log.log(TRACE, "audio control packet: %d bytes", len(data))
+                    self.control_packet_count += 1
+                    if self.control_packet_count <= 3:
+                        log.info(
+                            "audio control packet %d: %d bytes, payload type %#04x",
+                            self.control_packet_count,
+                            len(data),
+                            data[1] & 0x7F if len(data) > 1 else 0,
+                        )
 
     def _on_packet(self, packet: bytes) -> None:
         if len(packet) <= RTP_HEADER_LEN:
@@ -224,4 +362,49 @@ class AudioStream:
 
         sequence = struct.unpack_from(">H", packet, 2)[0]
         log.log(TRACE, "audio frame: seq %d, %d bytes", sequence, len(frame))
-        player.write(frame)
+
+        for ordered in self._jitter.push(sequence, frame):
+            self.frame_count += 1
+            try:
+                self._decode_queue.put_nowait(ordered)
+            except queue.Full:
+                # The decoder is behind. Dropping the newest frame keeps the
+                # backlog from becoming latency.
+                self.decode_backlog_drops += 1
+
+        self._maybe_log_stats()
+
+    def _decode_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                frame = self._decode_queue.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            with self._lock:
+                player = self._player
+            if player is None:
+                continue
+            player.write(frame)
+
+    def _maybe_log_stats(self) -> None:
+        """Report often enough to diagnose glitches, rarely enough to read."""
+        now = time.monotonic()
+        if now - self._last_stats < 5.0:
+            return
+        self._last_stats = now
+
+        with self._lock:
+            player = self._player
+        buffered = player.buffered_ms if player is not None else 0
+        underruns = player.underruns if player is not None else 0
+        log.info(
+            "audio: %d frames, %d lost, %d late, %d dup, %d backlog drops, "
+            "%d underruns, %d ms buffered",
+            self.frame_count,
+            self._jitter.lost,
+            self._jitter.late,
+            self._jitter.duplicates,
+            self.decode_backlog_drops,
+            underruns,
+            buffered,
+        )

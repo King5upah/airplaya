@@ -41,6 +41,7 @@ from airplaya.log import TRACE, get_logger
 from airplaya.net import bind_exclusive
 from airplaya.sink.base import VideoSink
 from airplaya.stream import nal
+from airplaya.stream.nal import START_CODE
 
 log = get_logger(__name__)
 
@@ -113,6 +114,8 @@ class MirrorStream:
         self._decryptor: MirrorDecryptor | None = None
         self._codec: str | None = None
         self._pending_parameter_sets: bytes | None = None
+        self._active_parameter_sets: bytes | None = None
+        self._geometry: tuple[int, int] | None = None
 
     # -- lifecycle -------------------------------------------------------
 
@@ -155,6 +158,8 @@ class MirrorStream:
             thread.join(timeout=3)
         self._sink.stop()
         self._codec = None
+        self._active_parameter_sets = None
+        self._geometry = None
 
     # -- accept loop -----------------------------------------------------
 
@@ -183,6 +188,8 @@ class MirrorStream:
                 log.info("mirror client disconnected")
                 self._sink.stop()
                 self._codec = None
+                self._active_parameter_sets = None
+                self._geometry = None
 
     def _read_stream(self, connection: socket.socket) -> None:
         connection.settimeout(0.5)
@@ -295,8 +302,36 @@ class MirrorStream:
             log.error("could not parse parameter sets: %s", exc)
             return
 
-        if codec != self._codec:
+        # Rotating the phone changes the picture size, and a decoder that is
+        # already running cannot follow that — it fails, and the window dies
+        # with it. New parameter sets are the signal: restart the player around
+        # them so the new geometry starts from a clean decoder.
+        geometry = self._geometry
+        if not is_hevc:
+            try:
+                sps_start = len(START_CODE)
+                sps_end = sets.index(START_CODE, sps_start)
+                geometry = nal.h264_dimensions(sets[sps_start:sps_end])
+            except (ValueError, nal.NalError) as exc:
+                log.debug("could not read the picture size from the SPS: %s", exc)
+
+        changed = sets != self._active_parameter_sets
+        if codec != self._codec or changed:
+            if self._codec is not None and changed:
+                if geometry and geometry != self._geometry:
+                    log.info(
+                        "picture size changed from %s to %dx%d; restarting the player",
+                        "x".join(str(n) for n in self._geometry or ()) or "unknown",
+                        *geometry,
+                    )
+                else:
+                    log.info("stream parameters changed; restarting the player")
+            elif geometry:
+                log.info("picture size is %dx%d", *geometry)
             self._start_sink(codec)
+
+        self._active_parameter_sets = sets
+        self._geometry = geometry
 
         with self._lock:
             self._pending_parameter_sets = sets

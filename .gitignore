@@ -18,3 +18,7 @@ src/airplaya/crypto/libplayfair.dylib
 # Captured streams
 *.h264
 *.h265
+
+# The desktop app lives in its own repository now; this copy is left behind
+# until the running build releases the directory.
+gui/

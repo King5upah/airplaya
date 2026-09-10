@@ -43,9 +43,23 @@ log = get_logger(__name__)
 _LOW_LATENCY_ARGS = [
     "-flags",
     "low_delay",
+    # A raw H.264 stream carries no timestamps, so ffplay synthesises them from
+    # `-framerate`. Paced against its own video clock, any mismatch between
+    # that rate and what the phone actually sends accumulates as delay. Running
+    # against the external (wall) clock with `-framedrop` instead means late
+    # frames are discarded rather than queued, so the picture stays current.
+    "-sync",
+    "ext",
     "-framedrop",
+    # Deliberately higher than the phone will send: ffplay then never waits on
+    # a timestamp, it just displays what has arrived.
     "-framerate",
-    "60",
+    "120",
+    "-flags2",
+    "fast",
+    # No title bar: a borderless window is what makes this look like a screen
+    # rather than a media player with a stream in it.
+    "-noborder",
     "-loglevel",
     "warning",
 ]
@@ -111,6 +125,11 @@ class FfplaySink(VideoSink):
             except OSError:
                 time.sleep(0.05)
                 continue
+            # Drop the connect timeout: it would otherwise apply to every
+            # send, and a full player buffer is normal back-pressure, not a
+            # failure. With it left in place the stream dies after a few
+            # seconds with "timed out".
+            connection.settimeout(None)
             connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             log.debug("video connected to ffplay on port %d", port)
             return connection

@@ -50,6 +50,133 @@ def to_annex_b(payload: bytearray) -> tuple[bytes, int]:
     return bytes(payload), count
 
 
+class _BitReader:
+    """Bit reader with exp-Golomb support, for reading an SPS."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+        self._pos = 0
+
+    def bit(self) -> int:
+        index, offset = divmod(self._pos, 8)
+        if index >= len(self._data):
+            raise NalError("ran off the end of the SPS")
+        self._pos += 1
+        return (self._data[index] >> (7 - offset)) & 1
+
+    def bits(self, count: int) -> int:
+        value = 0
+        for _ in range(count):
+            value = (value << 1) | self.bit()
+        return value
+
+    def ue(self) -> int:
+        """Unsigned exp-Golomb."""
+        leading = 0
+        while self.bit() == 0:
+            leading += 1
+            if leading > 32:
+                raise NalError("malformed exp-Golomb value in the SPS")
+        if leading == 0:
+            return 0
+        return (1 << leading) - 1 + self.bits(leading)
+
+    def se(self) -> int:
+        """Signed exp-Golomb."""
+        value = self.ue()
+        return (value + 1) // 2 if value % 2 else -(value // 2)
+
+
+def _remove_emulation_prevention(data: bytes) -> bytes:
+    """Strip the `00 00 03` escape bytes an encoder inserts."""
+    out = bytearray()
+    zeros = 0
+    for byte in data:
+        if zeros >= 2 and byte == 0x03:
+            zeros = 0
+            continue
+        out.append(byte)
+        zeros = zeros + 1 if byte == 0x00 else 0
+    return bytes(out)
+
+
+def h264_dimensions(sps: bytes) -> tuple[int, int]:
+    """Read the frame size out of an H.264 SPS.
+
+    Used to notice when the phone rotates: the picture size changes, and a
+    decoder already running cannot follow that, so the player has to be
+    restarted. Parsing is cheaper and more reliable than waiting for the
+    player to fall over.
+    """
+    if len(sps) < 4:
+        raise NalError(f"SPS is only {len(sps)} bytes")
+
+    # Skip the NAL header byte, and undo the encoder's escaping.
+    reader = _BitReader(_remove_emulation_prevention(sps[1:]))
+
+    profile_idc = reader.bits(8)
+    reader.bits(8)  # constraint flags and reserved bits
+    reader.bits(8)  # level_idc
+    reader.ue()  # seq_parameter_set_id
+
+    chroma_format_idc = 1
+    if profile_idc in (100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135):
+        chroma_format_idc = reader.ue()
+        if chroma_format_idc == 3:
+            reader.bit()  # separate_colour_plane_flag
+        reader.ue()  # bit_depth_luma_minus8
+        reader.ue()  # bit_depth_chroma_minus8
+        reader.bit()  # qpprime_y_zero_transform_bypass_flag
+        if reader.bit():  # seq_scaling_matrix_present_flag
+            count = 8 if chroma_format_idc != 3 else 12
+            for i in range(count):
+                if reader.bit():  # seq_scaling_list_present_flag[i]
+                    size = 16 if i < 6 else 64
+                    last = next_scale = 8
+                    for _ in range(size):
+                        if next_scale != 0:
+                            next_scale = (last + reader.se() + 256) % 256
+                        last = next_scale or last
+
+    reader.ue()  # log2_max_frame_num_minus4
+    pic_order_cnt_type = reader.ue()
+    if pic_order_cnt_type == 0:
+        reader.ue()  # log2_max_pic_order_cnt_lsb_minus4
+    elif pic_order_cnt_type == 1:
+        reader.bit()  # delta_pic_order_always_zero_flag
+        reader.se()  # offset_for_non_ref_pic
+        reader.se()  # offset_for_top_to_bottom_field
+        for _ in range(reader.ue()):
+            reader.se()
+
+    reader.ue()  # max_num_ref_frames
+    reader.bit()  # gaps_in_frame_num_value_allowed_flag
+    width_in_mbs = reader.ue() + 1
+    height_in_map_units = reader.ue() + 1
+    frame_mbs_only_flag = reader.bit()
+    if not frame_mbs_only_flag:
+        reader.bit()  # mb_adaptive_frame_field_flag
+    reader.bit()  # direct_8x8_inference_flag
+
+    crop_left = crop_right = crop_top = crop_bottom = 0
+    if reader.bit():  # frame_cropping_flag
+        crop_left = reader.ue()
+        crop_right = reader.ue()
+        crop_top = reader.ue()
+        crop_bottom = reader.ue()
+
+    width = width_in_mbs * 16
+    height = (2 - frame_mbs_only_flag) * height_in_map_units * 16
+
+    # Cropping is counted in chroma samples, which are subsampled except in
+    # 4:4:4.
+    sub_width = 1 if chroma_format_idc == 3 else 2
+    sub_height = (1 if chroma_format_idc == 3 else 2) * (2 - frame_mbs_only_flag)
+    width -= (crop_left + crop_right) * sub_width
+    height -= (crop_top + crop_bottom) * sub_height
+    return width, height
+
+
 def describe_h264(nal_header: int) -> str:
     nal_type = nal_header & 0x1F
     return _H264_TYPE_NAMES.get(nal_type, f"type {nal_type}")

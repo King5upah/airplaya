@@ -1,5 +1,31 @@
 # Worklog
 
+## 2026-09-10 — audio quality, rotation, in-app video, repository split
+
+Audio: the metallic buzz was padding. A decoded audio plane's buffer is larger
+than the samples it holds — measured at 128 bytes per 1024-sample frame — and
+the whole plane was being sent to the device, so every frame carried 32 samples
+of garbage. Only the real samples are copied now. On top of that, decoding moved
+off the receive thread, and a jitter buffer reorders frames by RTP sequence,
+drops duplicates and late arrivals, and skips a gap rather than stalling.
+
+The audio was silent before any of that mattered, for a duller reason: the
+receive loop did a blocking read on each socket in turn, so a quiet control
+socket throttled the data socket to about two packets a second. One selector
+over both sockets fixed it.
+
+Rotation: the player was only restarted when the codec changed, so rotating the
+phone — which changes the picture size — killed the decoder. The picture size
+now comes from parsing the SPS, and new parameter sets restart the player. The
+parser is checked against real x264 output, including 1170x2532.
+
+Video output: added `--sink app`, which decodes H.264 here and streams scaled
+RGBA frames over loopback TCP to a client. That is what lets the desktop app
+draw the picture itself, with its own controls instead of a player's title bar.
+
+The desktop app moved to its own (private) repository. This repository is the
+protocol implementation, and it stays open.
+
 ## 2026-09-09 — first working mirror
 
 Built the receiver from scratch against the AirPlay v1 mirroring protocol,
