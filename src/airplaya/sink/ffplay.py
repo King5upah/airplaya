@@ -1,16 +1,23 @@
 """Play the mirrored stream in an ffplay window.
 
 ffplay is a pragmatic choice rather than an elegant one: it decodes and
-displays H.264 with no extra dependency beyond an ffmpeg build. The flags below
-all serve latency — without them ffplay buffers enough to put the mirror a
-second or more behind the phone.
+displays H.264 with no dependency beyond an ffmpeg build.
+
+The stream reaches it over a loopback TCP connection, not over stdin. That is
+not a style preference. Given `-i -` on Windows, ffplay consumes the stream and
+decodes it happily but never creates its window, so mirroring appears to do
+nothing at all; the same stream from a file or a socket opens a window
+immediately. `tcp://…?listen=1` is a URL like any other to ffmpeg, so it takes
+that path instead.
 """
 
 from __future__ import annotations
 
 import shutil
+import socket
 import subprocess
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -19,23 +26,31 @@ from airplaya.sink.base import VideoSink
 
 log = get_logger(__name__)
 
-# `-probesize`/`-analyzeduration` stop ffplay from waiting to inspect the
-# stream; `nobuffer`/`low_delay`/`-framedrop` keep it from queueing frames.
+# `-flags low_delay` and `-framedrop` keep latency down; `-framerate` saves
+# ffplay from having to estimate one.
+#
+# Two latency options are deliberately absent, because each one costs the
+# window entirely — ffplay decodes the stream and never displays it:
+#
+# * `-fflags nobuffer`. Measured: with it, ffplay runs with no window at all;
+#   without it, the window appears immediately. Same stream either way.
+# * `-probesize 32 -analyzeduration 0`. Too little data to estimate a frame
+#   rate ("not enough frames to estimate rate"), so the decoder never finishes
+#   opening.
+#
+# If you are tempted to add either one back for latency, check that a window
+# still appears.
 _LOW_LATENCY_ARGS = [
-    "-fflags",
-    "nobuffer",
     "-flags",
     "low_delay",
     "-framedrop",
-    "-probesize",
-    "32",
-    "-analyzeduration",
-    "0",
-    "-sync",
-    "video",
+    "-framerate",
+    "60",
     "-loglevel",
     "warning",
 ]
+
+_CONNECT_TIMEOUT = 6.0
 
 
 class FfplaySink(VideoSink):
@@ -49,9 +64,15 @@ class FfplaySink(VideoSink):
         self._window_title = window_title
         self._extra_args = list(extra_args)
         self._process: subprocess.Popen[bytes] | None = None
+        self._socket: socket.socket | None = None
 
     def start(self, codec: str) -> None:
         self.stop()
+
+        port = _free_port()
+        # ffplay listens; we connect. The listen timeout is ffplay's own, so a
+        # crash on our side does not leave it waiting forever.
+        url = f"tcp://127.0.0.1:{port}?listen=1&listen_timeout=8000"
         command = [
             self._binary,
             *_LOW_LATENCY_ARGS,
@@ -60,50 +81,71 @@ class FfplaySink(VideoSink):
             "-f",
             codec,
             "-i",
-            "-",
+            url,
             *self._extra_args,
         ]
         log.info("starting sink: %s", " ".join(command))
         try:
-            self._process = subprocess.Popen(
-                command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL
-            )
+            self._process = subprocess.Popen(command, stdin=subprocess.DEVNULL)
         except FileNotFoundError as exc:
             raise RuntimeError(
                 f"could not run {self._binary!r}. Install ffmpeg, or pass "
                 "--sink file to write the stream instead."
             ) from exc
 
+        self._socket = self._connect(port)
+        if self._socket is None:
+            self.stop()
+            raise RuntimeError("ffplay did not accept the video connection")
+
+    def _connect(self, port: int) -> socket.socket | None:
+        """Wait for ffplay's listener to come up, then connect."""
+        deadline = time.monotonic() + _CONNECT_TIMEOUT
+        while time.monotonic() < deadline:
+            process = self._process
+            if process is not None and process.poll() is not None:
+                log.error("ffplay exited before accepting the stream")
+                return None
+            try:
+                connection = socket.create_connection(("127.0.0.1", port), timeout=1.0)
+            except OSError:
+                time.sleep(0.05)
+                continue
+            connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            log.debug("video connected to ffplay on port %d", port)
+            return connection
+        log.error("timed out waiting for ffplay to listen on port %d", port)
+        return None
+
     @property
     def alive(self) -> bool:
         return self._process is not None and self._process.poll() is None
 
     def write(self, data: bytes) -> None:
-        process = self._process
-        if process is None or process.stdin is None:
-            return
-        if process.poll() is not None:
-            # The user closed the window. Drop data rather than crashing the
-            # stream thread; the receiver notices via `alive`.
+        connection = self._socket
+        if connection is None:
             return
         try:
-            process.stdin.write(data)
-            process.stdin.flush()
-        except (BrokenPipeError, OSError) as exc:
-            log.info("sink closed the pipe (%s); dropping video", exc)
+            connection.sendall(data)
+        except OSError as exc:
+            # The window was closed. Drop the data rather than killing the
+            # stream thread; the receiver notices through `alive`.
+            log.info("sink closed the connection (%s); dropping video", exc)
+            self._socket = None
 
     def stop(self) -> None:
+        connection, self._socket = self._socket, None
+        if connection is not None:
+            try:
+                connection.close()
+            except OSError:
+                pass
+
         process = self._process
         self._process = None
         if process is None:
             return
 
-        # Closing stdin is the polite exit: ffplay sees end of stream.
-        if process.stdin is not None:
-            try:
-                process.stdin.close()
-            except OSError:
-                pass
         try:
             process.wait(timeout=2)
             return
@@ -128,6 +170,13 @@ class FfplaySink(VideoSink):
                 capture_output=True,
                 check=False,
             )
+
+
+def _free_port() -> int:
+    """Ask the OS for an unused loopback port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
 
 
 def default_binary() -> str:

@@ -197,6 +197,13 @@ class MirrorStream:
             if payload_size > MAX_PAYLOAD:
                 raise ValueError(f"refusing a {payload_size}-byte payload")
 
+            log.debug(
+                "mirror packet: type %#04x option %#04x payload %d bytes",
+                payload_type,
+                option,
+                payload_size,
+            )
+
             payload = b""
             if payload_size:
                 chunk = self._read_exactly(connection, payload_size)
@@ -249,6 +256,14 @@ class MirrorStream:
             log.warning("video arrived before SETUP installed the stream keys")
             return
 
+        # Parameter sets normally arrive first and are what starts the sink, but
+        # the order is not guaranteed: a client that reconnects mid-stream sends
+        # video straight away. Without this the sink stays closed and every
+        # frame is discarded silently — no window, no error.
+        if self._codec is None:
+            log.info("video arrived before any parameter sets; assuming h264")
+            self._start_sink("h264")
+
         decrypted = decryptor.decrypt(payload)
         try:
             annex_b, count = nal.to_annex_b(decrypted)
@@ -281,14 +296,21 @@ class MirrorStream:
             return
 
         if codec != self._codec:
-            log.info("video codec is %s; (re)starting the sink", codec)
-            self._sink.stop()
-            self._sink.start(codec)
-            self._codec = codec
+            self._start_sink(codec)
 
         with self._lock:
             self._pending_parameter_sets = sets
         log.debug("held %d bytes of %s parameter sets for the next payload", len(sets), codec)
+
+    def _start_sink(self, codec: str) -> None:
+        log.info("video codec is %s; (re)starting the sink", codec)
+        self._sink.stop()
+        try:
+            self._sink.start(codec)
+        except RuntimeError as exc:
+            log.error("%s", exc)
+            return
+        self._codec = codec
 
     def _on_performance(self, payload: bytes) -> None:
         if log.getEffectiveLevel() > TRACE:

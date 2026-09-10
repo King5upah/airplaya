@@ -36,6 +36,34 @@ Three bugs cost most of the debugging time, all worth remembering:
    5353 already; publishing our own `airplaya.local` put two responders in
    conflict. Using the real hostname avoids it.
 
-Not done: audio playback. The ports are bound and drained so iOS is satisfied,
+## 2026-09-09 — audio, and the invisible video window
+
+Audio now plays: RTP on UDP 6000 decrypted with AES-128-CBC, AAC-ELD decoded
+in-process by PyAV with an AudioSpecificConfig rebuilt from SETUP, played
+through PortAudio on a device the user picks in the app. A LATM wrapper was
+tried first so that an ffmpeg subprocess could decode; ffmpeg's LOAS demuxer
+accepts an AAC-LC config but not an ELD one, so decoding moved in-process.
+
+The video window took much longer, because everything upstream of it worked:
+the log showed the handshake completing, payloads arriving, decryption
+succeeding, and ffplay running and decoding — with no window on screen. Three
+separate causes, each found by bisecting flags against a synthetic stream
+rather than by asking for another mirroring attempt:
+
+1. `-fflags nobuffer` stops ffplay creating its window at all. Measured
+   directly: same stream, same everything else, window handle 0 with the flag
+   and a real window without it.
+2. `-probesize 32 -analyzeduration 0` leaves too little data to estimate a
+   frame rate, so the decoder never finishes opening. `-framerate 60` replaces
+   the guess.
+3. Feeding ffplay over stdin never opens a window on Windows either. The stream
+   now goes over a loopback TCP connection with `?listen=1`, which ffmpeg
+   treats as an ordinary URL.
+
+Also fixed: Chocolatey's `ffplay.exe` is a shim that spawns the real binary as
+a child, so killing the shim orphaned four windowless ffplay processes. The
+sink resolves the real executable and falls back to `taskkill /T`.
+
+Not done: ALAC audio. The ports are bound and drained so iOS is satisfied,
 but AAC-ELD and ALAC both need their codec configuration passed to a decoder
 out-of-band, which is its own piece of work.

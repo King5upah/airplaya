@@ -118,6 +118,7 @@ class TimingClient:
         struct.pack_into(">Q", packet, 24, ntp_now())
         try:
             sock.sendto(bytes(packet), remote)
+            log.debug("timing request sent to %s:%d", *remote)
         except OSError as exc:
             log.debug("timing request to %s failed: %s", remote, exc)
 
@@ -129,4 +130,4 @@ class TimingClient:
         # reference we echo on the next request.
         (self._client_reference,) = struct.unpack_from(">Q", data, 24)
         self._receive_time = ntp_now()
-        log.log(TRACE, "timing reply, type %#02x", data[1] & ~0x80)
+        log.debug("timing reply received, type %#04x", data[1] & ~0x80)

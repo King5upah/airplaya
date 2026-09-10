@@ -13,7 +13,9 @@ def build_sink(config: Config) -> VideoSink:
     if kind == "ffplay":
         return FfplaySink(
             binary=config.ffplay_binary,
-            window_title=f"airplaya — {config.name}",
+            # Plain ASCII: the title reaches ffplay through the console code
+            # page, and anything else arrives mangled.
+            window_title=f"airplaya - {config.name}",
             extra_args=config.ffplay_extra_args,
         )
     if kind == "file":
