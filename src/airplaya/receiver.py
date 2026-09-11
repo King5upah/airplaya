@@ -122,6 +122,18 @@ class Receiver:
                     "sizeBytes": clip.size_bytes,
                 }
             }
+        if command == "video_size":
+            # The front end knows how large it is drawing the picture; scaling
+            # to that keeps the image sharp instead of upscaling a smaller one.
+            width = int(message.get("width") or 0)
+            height = int(message.get("height") or 0)
+            if width <= 0 or height <= 0:
+                raise ValueError("video_size needs a positive width and height")
+            setter = getattr(self._sink, "set_display_size", None)
+            if setter is None:
+                return {"applied": False, "reason": "this sink scales nothing"}
+            setter(width, height)
+            return {"applied": True, "width": width, "height": height}
         if command == "status":
             return {
                 "recording": self._recorder.recording,

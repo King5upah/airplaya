@@ -65,9 +65,10 @@ def scaled_size(width: int, height: int, max_side: int) -> tuple[int, int]:
 
 
 class AppSink(VideoSink):
-    def __init__(self, port: int, max_side: int = 1080) -> None:
+    def __init__(self, port: int, max_side: int = 1920) -> None:
         self._port = port
         self._max_side = max_side
+        self._requested_side: int | None = None
         self._decoder = None
         self._socket: socket.socket | None = None
         self._lock = threading.Lock()
@@ -132,8 +133,26 @@ class AppSink(VideoSink):
         for frame in frames:
             self._queue(frame)
 
+    def set_display_size(self, width: int, height: int) -> None:
+        """Tell the sink how large the client is drawing the picture.
+
+        Scaling to the window means the pixels sent are the pixels shown.
+        Sending less than that is visibly soft; sending more wastes bandwidth
+        and conversion time on detail that is thrown away on screen.
+        """
+        requested = max(2, max(width, height))
+        if requested != self._requested_side:
+            self._requested_side = requested
+            log.info("client is drawing at %dx%d; scaling to fit", width, height)
+
+    def _target_side(self) -> int:
+        """Never scale above the configured ceiling, or below 480."""
+        if self._requested_side is None:
+            return self._max_side
+        return max(480, min(self._max_side, self._requested_side))
+
     def _queue(self, frame) -> None:
-        width, height = scaled_size(frame.width, frame.height, self._max_side)
+        width, height = scaled_size(frame.width, frame.height, self._target_side())
         try:
             rgba = frame.reformat(width=width, height=height, format="rgba")
             pixels = rgba.to_ndarray(format="rgba").tobytes()

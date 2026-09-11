@@ -39,8 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--video-max-side",
         type=int,
-        default=1080,
-        help="for --sink app: longest edge to scale frames to (default: 1080)",
+        default=1920,
+        help="for --sink app: ceiling for the longest edge of a frame (default: 1920). "
+        "The client can request less through the control channel",
     )
     parser.add_argument(
         "-o", "--sink-path", help="output file for --sink file (raw Annex-B H.264)"
