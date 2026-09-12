@@ -1,5 +1,73 @@
 # Worklog
 
+## 2026-09-11 — mirroring over the cable, and a build that ships
+
+Sharpness first, since it was outstanding: the app sink was scaling every frame
+to a fixed 1080-pixel long side, so a 1920x1080 mirror arrived as 1080x607 and
+the front end upscaled it back. The client now reports its drawing surface in
+real pixels over the control channel and the sink scales to that, with the
+ceiling moved to 1920.
+
+Then the cable. An iPhone exposes a second protocol over USB — the one
+QuickTime on a Mac uses — and it has nothing in common with AirPlay: no mDNS,
+no pairing, no FairPlay, no encryption. A vendor control request
+(`0x40, 0x52, wIndex=2`) makes the phone re-enumerate with a hidden USB
+configuration carrying two extra bulk endpoints at subclass `0x2A`, and from
+there the host drives a clock handshake and pulls H.264 and 48 kHz PCM in the
+clear. Latency measures around 40 ms against 100–200 over Wi-Fi.
+
+What made it cheap is that `sdat` in a FEED packet holds length-prefixed NAL
+units — exactly what the AirPlay stream holds after decryption. So
+`to_annex_b` onwards is shared: the decoder, the window, the rotation restart,
+the clip recorder. What was new is the packet layer (`wired/packets.py`), the
+CoreMedia serialisation (`wired/coremedia.py`), the handshake
+(`wired/session.py`) and the USB plumbing (`wired/usb.py`).
+
+Three things that would have cost hours if they were not written down
+somewhere:
+
+1. **Magics are little-endian.** `ping` reads as `gnip` in a hex dump. Every
+   constant is written in reading order and reversed on the wire, because
+   getting this backwards produces parsers that look right and match nothing.
+2. **The phone sends nothing until it is asked**, and keeps needing asking:
+   one `ASYN NEED` at the start and one after every single `FEED`. Miss one and
+   the stream stalls in a way that looks like a decoder fault.
+3. **`HPD1` decides the quality.** The phone renders to whatever screen size
+   that dictionary claims, so the app's size picker matters on the cable
+   exactly as it does over Wi-Fi.
+
+Tested against 23 frames captured from a real phone (MIT, from
+`quicktime_video_hack`, credited in `tests/data/wired/README.md`), including
+byte-for-byte comparison of the `HPD1` and `HPA1` dictionaries we send — the
+phone either accepts a dictionary or ignores it silently, so "close enough" is
+not a useful state. 94 tests pass.
+
+The audio player gained a PCM entry point, since the cable sends audio already
+decoded at 48 kHz, and the recorder now takes the sample rate instead of
+assuming 44.1 kHz — a WAV header claiming the wrong rate plays the clip back
+slow.
+
+Windows is the hard part, and it is why the Go implementation this builds on
+says "I have given up on windows support". Windows does not let a user-mode
+program change a USB device's active configuration; WinUSB and libusbK inherit
+that, and mirroring lives on configuration N. A libusb0-style filter driver
+above Apple's driver works, and UsbDk works if the library call is followed by
+a raw `SET_CONFIGURATION` — its libusb backend implements the call as a no-op,
+so `_select_configuration` reads the active configuration back to find out
+which of the two actually took effect. Nothing is installed automatically;
+the app explains the prerequisite instead.
+
+Also: the receiver's RTSP log line was claiming the exact phrase the desktop
+app watches for to find the loopback command port, so the app would try to
+speak JSON to RTSP. Renamed.
+
+Finally, `scripts/build_exe.py` freezes the receiver with PyInstaller into
+`dist/airplaya/`, so a shipped copy of the app needs no Python, no PyAV, no
+PortAudio and no libusb on the machine. Verified standalone: mDNS
+advertisement, sockets and audio all come up from the frozen build.
+
+Written up in `docs/wired.md`.
+
 ## 2026-09-10 — audio quality, rotation, in-app video, repository split
 
 Audio: the metallic buzz was padding. A decoded audio plane's buffer is larger
