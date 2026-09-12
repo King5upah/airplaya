@@ -25,6 +25,10 @@ dependencies = [
   # codec configuration it needs), sounddevice picks the output device.
   "av>=12",
   "sounddevice>=0.4",
+  # Mirroring over the cable talks to the phone's bulk endpoints directly.
+  # libusb-package carries the libusb binary, so there is no DLL to find.
+  "pyusb>=1.2",
+  "libusb-package>=1.0.26",
 ]
 
 [project.optional-dependencies]

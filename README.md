@@ -1,25 +1,35 @@
 # airplaya
 
-An AirPlay mirroring receiver for Windows. Put your iPhone or iPad screen on
-your desktop over Wi-Fi, with no app on the phone: the receiver shows up in the
-normal iOS **Screen Mirroring** list.
+An iPhone and iPad screen mirroring receiver for Windows, over Wi-Fi **or the
+USB cable**, with no app on the phone. Over Wi-Fi the receiver shows up in the
+normal iOS **Screen Mirroring** list; over the cable it just starts.
 
-The receiver is Python. A small Flutter desktop app is included as a front end,
-and the video is displayed by `ffplay`.
+The receiver is Python. A Flutter desktop app is available as a front end, and
+without it the video is displayed by `ffplay`.
 
 ```
+Wi-Fi:
 iPhone ──mDNS──> airplaya (:7000 RTSP)
        ──pair-setup / pair-verify / fp-setup──> keys
-       ──H.264 over TCP (:7100, AES-CTR)──────> decrypt ─> ffplay
+       ──H.264 over TCP (:7100, AES-CTR)──────> decrypt ─> window
+
+Cable:
+iPhone ──USB bulk endpoints (subclass 0x2A)──> H.264 in the clear ─> window
 ```
 
 ## Status
 
-Working: discovery, pairing, the FairPlay handshake, video decryption,
-H.264/H.265 display, and audio playback on an output device of your choosing.
+Working over Wi-Fi: discovery, pairing, the FairPlay handshake, video
+decryption, H.264/H.265 display, audio playback on an output device of your
+choosing, and clip recording.
 
-Not yet: ALAC audio. Mirroring uses AAC-ELD, which is what is implemented;
-a client that negotiates ALAC gets video only. See [Audio](#audio).
+Working over the cable: the QuickTime capture protocol — full frame rate,
+48 kHz audio, no encryption, lower latency. Needs a USB driver prerequisite on
+Windows; see [docs/wired.md](docs/wired.md).
+
+Not yet: ALAC audio. Wi-Fi mirroring uses AAC-ELD, which is what is
+implemented; a client that negotiates ALAC gets video only. See
+[Audio](#audio).
 
 ## Requirements
 
@@ -28,6 +38,8 @@ a client that negotiates ALAC gets video only. See [Audio](#audio).
 * [ffmpeg](https://ffmpeg.org/) on `PATH`, for `ffplay`
 * A C compiler, once, to build the FairPlay helper — [zig](https://ziglang.org/)
   is the smallest option (`winget install zig.zig`) and needs no admin rights
+* For cable mirroring only: a USB driver that can select a non-first
+  configuration. Windows' own cannot — [docs/wired.md](docs/wired.md#7-windows-the-driver-problem)
 
 ## Install
 
@@ -46,10 +58,20 @@ python -m airplaya
 
 Then on the iPhone: **Control Centre → Screen Mirroring → airplaya**.
 
+Over the cable instead:
+
+```powershell
+python -m airplaya --list-usb-devices
+python -m airplaya --source usb
+```
+
 Useful flags:
 
 | Flag | What it does |
 | --- | --- |
+| `--source usb` | mirror over the cable instead of Wi-Fi |
+| `--usb-serial UDID` | which device, when more than one is plugged in |
+| `--list-usb-devices` | print the iOS devices on USB and exit |
 | `--name NAME` | the name shown in the iOS list |
 | `--sink file -o out.h264` | write the raw stream instead of playing it |
 | `--sink app --video-port N` | decode here and stream RGBA frames to a client on that port |
@@ -92,6 +114,10 @@ chain, the stream formats, and what this receiver does differently from a real
 Apple TV — see **[docs/airplay.md](docs/airplay.md)**. It is written from what
 went over the wire here, including the bugs that were most expensive to find.
 
+The cable is a completely different protocol, and has its own write-up:
+**[docs/wired.md](docs/wired.md)** — the hidden USB configuration, the clock
+handshake, the sample buffers, and why Windows makes it hard.
+
 ### The code
 
 | Module | Responsibility |
@@ -107,6 +133,10 @@ went over the wire here, including the bugs that were most expensive to find.
 | `stream/audio.py` | the audio stream: RTP, AES-CBC, frame extraction |
 | `stream/asc.py` | rebuilding the AAC configuration the decoder needs |
 | `sink/` | where the media goes: ffplay, a client app, a file, or nowhere |
+| `wired/usb.py` | the hidden USB configuration and the bulk endpoints |
+| `wired/coremedia.py` | CoreMedia serialisation: dicts, times, sample buffers |
+| `wired/packets.py` | PING / SYNC / RPLY / ASYN, and the replies we send |
+| `wired/session.py` | the clock handshake, and the media once it flows |
 
 Two details cause most of the trouble when writing one of these:
 
@@ -149,12 +179,17 @@ python -m pytest
 ```
 
 The suite covers the keystream alignment, the key derivation, the NAL
-conversion, and the RTSP message layer — everything that can be checked without
-an iPhone in the room.
+conversion, the RTSP message layer, and the whole cable protocol against packets
+captured from a real phone — everything that can be checked without an iPhone in
+the room.
 
 ## Licence and credits
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+The cable protocol was reverse engineered by Daniel Paulus in
+[quicktime_video_hack][qvh] (MIT); the captured packets in `tests/data/wired`
+come from that project and are what the parsers are tested against.
 
 `native/playfair/` is vendored C from the [playfair][playfair] project, by way
 of [RPiPlay][rpiplay] and [UxPlay][uxplay]. The FairPlay `fp-setup` reply
@@ -162,6 +197,7 @@ constants come from UxPlay's `fairplay_playfair.c` (LGPL-2.1). The protocol
 itself was worked out by those projects and by [OpenAirplay][openairplay]; this
 implementation follows their findings.
 
+[qvh]: https://github.com/danielpaulus/quicktime_video_hack
 [playfair]: https://github.com/systemcrash/playfair
 [rpiplay]: https://github.com/FD-/RPiPlay
 [uxplay]: https://github.com/FDH2/UxPlay

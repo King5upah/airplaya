@@ -52,7 +52,7 @@ class Config:
     # For sink == "app": the port the desktop app is listening on, and the
     # longest edge to scale frames to before sending them.
     video_port: int | None = None
-    video_max_side: int = 1080
+    video_max_side: int = 1920
     sink_path: str | None = None  # target file when sink == "file"
     ffplay_binary: str = "ffplay"
     ffplay_extra_args: list[str] = field(default_factory=list)

@@ -155,7 +155,10 @@ class Receiver:
         threading.Thread(
             target=self._rtsp.serve_forever, name="rtsp-accept", daemon=True
         ).start()
-        log.info("control channel listening on port %d", self.config.rtsp_port)
+        # Not "control channel": the front end watches the log for that phrase
+        # to find the loopback command port, and would try to speak JSON to
+        # RTSP.
+        log.info("RTSP connection listening on port %d", self.config.rtsp_port)
 
         self._advertiser = Advertiser(
             name=self.config.name,

@@ -26,6 +26,23 @@ def build_parser() -> argparse.ArgumentParser:
         "-n", "--name", default="airplaya", help="name shown in the iOS picker"
     )
     parser.add_argument(
+        "--source",
+        choices=("wifi", "usb"),
+        default="wifi",
+        help="where the phone connects from: over the network (default) or "
+        "through the USB cable",
+    )
+    parser.add_argument(
+        "--usb-serial",
+        help="for --source usb: which device to use, by serial or UDID "
+        "(default: the only one connected)",
+    )
+    parser.add_argument(
+        "--list-usb-devices",
+        action="store_true",
+        help="print the iOS devices on USB and exit",
+    )
+    parser.add_argument(
         "--sink",
         choices=("ffplay", "app", "file", "null"),
         default="ffplay",
@@ -154,12 +171,39 @@ def print_audio_devices(as_json: bool) -> int:
     return 0
 
 
+def print_usb_devices(as_json: bool) -> int:
+    from airplaya.wired import find_devices
+    from airplaya.wired.usb import UsbError, UsbUnavailable
+
+    try:
+        devices = find_devices()
+    except (UsbError, UsbUnavailable) as exc:
+        if as_json:
+            print(json.dumps({"error": str(exc), "devices": []}))
+        else:
+            print(f"airplaya: {exc}", file=sys.stderr)
+        return 1
+
+    if as_json:
+        print(json.dumps([device.as_dict() for device in devices]))
+        return 0
+    if not devices:
+        print("No iPhone or iPad is connected over USB.")
+        return 0
+    print("Devices on USB:")
+    for device in devices:
+        print(f"  {device}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     configure(args.verbose)
 
     if args.list_audio_devices:
         return print_audio_devices(args.json)
+    if args.list_usb_devices:
+        return print_usb_devices(args.json)
 
     try:
         config = config_from_args(args)
@@ -168,6 +212,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
+        if args.source == "usb":
+            from airplaya.wired import WiredReceiver
+
+            WiredReceiver(config, serial=args.usb_serial).serve_forever()
+            return 0
         Receiver(config).serve_forever()
     except OSError as exc:
         # Almost always a port already in use, or a firewall block.

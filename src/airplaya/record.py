@@ -82,7 +82,14 @@ class ClipRecorder:
 
     # -- lifecycle -------------------------------------------------------
 
-    def start(self, path: str | Path, codec: str = "h264", with_audio: bool = True) -> Path:
+    def start(
+        self,
+        path: str | Path,
+        codec: str = "h264",
+        with_audio: bool = True,
+        audio_rate: int = AUDIO_SAMPLE_RATE,
+        audio_channels: int = AUDIO_CHANNELS,
+    ) -> Path:
         """Begin recording to `path`. Returns the resolved output path."""
         with self._lock:
             if self._process is not None:
@@ -138,9 +145,12 @@ class ClipRecorder:
             if self._audio_path is not None:
                 try:
                     handle = wave.open(str(self._audio_path), "wb")
-                    handle.setnchannels(AUDIO_CHANNELS)
+                    # The rate has to match the PCM being fed in, not a
+                    # constant: the cable path plays 48 kHz, and a WAV header
+                    # claiming 44.1 would make the clip play back slow.
+                    handle.setnchannels(audio_channels)
                     handle.setsampwidth(2)
-                    handle.setframerate(AUDIO_SAMPLE_RATE)
+                    handle.setframerate(audio_rate)
                     self._wave = handle
                 except OSError as exc:
                     log.warning("recording without audio: %s", exc)
@@ -184,7 +194,7 @@ class ClipRecorder:
                 self._socket = None
 
     def add_audio(self, pcm: bytes) -> None:
-        """Write interleaved 16-bit stereo PCM at 44.1 kHz."""
+        """Write interleaved 16-bit PCM in the rate `start` was given."""
         with self._lock:
             handle = self._wave
             if handle is None or self._waiting_for_keyframe:
